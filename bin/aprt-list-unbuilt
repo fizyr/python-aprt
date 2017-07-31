@@ -104,8 +104,8 @@ def sort_buildorder(directories, srcinfos):
 
 def main():
 	parser = argparse.ArgumentParser(description='List unbuilt packages and/or their reverse dependencies.')
-	parser.add_argument('-p', '--pkgbuild-dir',      dest='pkgbuild_dir',                                 help='The base path of the PKGBUILD and .SRCINFO directories.')
-	parser.add_argument('-r', '--repository',        dest='repository',                                   help='The repository to search through for unbuilt packages.')
+	parser.add_argument('-p', '--pkgbuild-dir',      dest='pkgbuild_dir',      required=True,             help='The base path of the PKGBUILD and .SRCINFO directories.')
+	parser.add_argument('-r', '--repository',        dest='repository',        required=True,             help='The repository to search through for unbuilt packages.')
 	parser.add_argument('-d', '--reverse-deps',      dest='reverse_deps',      action='store_true',       help='Ouput the reverse dependencies of the unbuilt packages.')
 	parser.add_argument('-n', '--no-unbuilt',        dest='no_unbuilt',        action='store_true',       help='Do not output the unbuilt packages themselves (useful with -d).')
 	parser.add_argument('-v', '--verbose',           dest='verbose',           action='store_true',       help='Show verbose output.')

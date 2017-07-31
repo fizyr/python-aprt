@@ -26,7 +26,6 @@
 
 from . import (
 	alpm,
-	outdated,
 	package,
 	srcinfo,
 	util,
