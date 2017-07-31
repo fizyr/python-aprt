@@ -157,6 +157,11 @@ class Package:
 		result.add(Dependency.parse(self.name))
 		return result
 
+	def providesName(self, name):
+		for provide in self.provides():
+			if provide.name == name: return True
+		return False
+
 	def conflicts(self):
 		return map(Dependency.parse, self.get_values('conflicts'))
 

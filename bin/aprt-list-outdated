@@ -28,13 +28,10 @@
 
 from glob import glob
 import os.path
+import argparse
 
 import aprt.alpm
-import aprt.logging
-import aprt.argparse
 from   aprt.outdated import find_outdated
-
-logging.getLogger().addFilter(lambda x: False)
 
 def main():
 	parser = argparse.ArgumentParser(description='List packages with dependencies that have been built after themselves.')
@@ -55,10 +52,6 @@ def main():
 	for file in options.ignore_file:
 		with open(file, 'r') as file:
 			ignore.update([line.strip() for line in file if len(line.strip())])
-
-	# Set logging level.
-	#if options.verbose:
-		#logging.getLogger().setLevel(logging.INFO)
 
 	# Add database in specified directories to database list.
 	for directory in options.directory:

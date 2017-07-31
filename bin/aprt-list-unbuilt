@@ -33,8 +33,6 @@ import argparse
 
 import alpm
 
-#logging.getLogger().setLevel(logging.DEBUG)
-
 def is_unbuilt(pkgbuild, repository):
 	if pkgbuild.name not in repository:
 		logging.info("Package `{}' ({}) is does not exist in the repository.".format(pkgbuild.name, pkgbuild.version()))

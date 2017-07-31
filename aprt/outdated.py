@@ -1,5 +1,11 @@
 from . import alpm
 
+def provides_dep(package, other_package):
+	""" Check if a package provides a dependency of another package. """
+	for dep in other_package.alldepends():
+		if package.providesName(dep.name): return True
+	return False
+
 def package_path(repository_dir, package, compression = 'xz'):
 	return '{}/{}-{}-{}.pkg.tar.{}'.format(
 		repository_dir,
@@ -8,14 +14,6 @@ def package_path(repository_dir, package, compression = 'xz'):
 		package.get_value('arch'),
 		compression
 	)
-
-
-def provides_dep(package, other_package):
-	""" Check if a package provides a dependency of another package. """
-	for provide in package.provides():
-		if provide.name in map(lambda x: x.name, other_package.depends()):     return True
-		if provide.name in map(lambda x: x.name, other_package.makedepends()): return True
-	return False
 
 def find_newer_deps(package, repository_dir, universe, ignore, quick):
 	built_package = alpm.read_package_file(package_path(repository_dir, package))
