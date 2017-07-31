@@ -24,7 +24,14 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-from . import alpm, package, srcinfo, util, version
+from . import (
+	alpm,
+	outdated,
+	package,
+	srcinfo,
+	util,
+	version
+)
 
 parse_alpm_dict          = alpm.parse_alpm_dict
 parse_info_dict          = alpm.parse_info_dict
