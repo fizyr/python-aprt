@@ -1,0 +1,128 @@
+#!/usr/bin/env python
+
+# Copyright 2017 Delft Robotics BV
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+# 3. Neither the name of the copyright holder nor the names of its contributors
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+import argparse
+import os
+import re
+
+import aprt
+
+def flatten(iterable):
+	for x in iterable:
+		for elem in x: yield elem
+
+pkgrel_regex = re.compile('^pkgrel=[0-9]+$', re.MULTILINE);
+
+def write_pkgrel(filename, pkgrel):
+	data = ""
+	with open(filename, 'r') as file:
+		data = file.read()
+	match = re.search(pkgrel_regex, data)
+	if not match:
+		raise RuntimeError('Unable to find pkgrel in PKGBUILD from {}'.format(filename))
+	data = data[:match.start()] + 'pkgrel={}'.format(pkgrel) + data[match.end():]
+	with open(filename, 'w') as file:
+		file.write(data)
+
+def bump_package(pkgname, srcinfo_db, repository, verbose):
+	# Look up the package.
+	if pkgname not in srcinfo_db:
+		raise RuntimeError('Package {} not found in SRCINFO database'.format(pkgname));
+	if pkgname not in repository:
+		raise RuntimeError('Package {} not found in repository database'.format(pkgname));
+
+	srcinfo       = srcinfo_db[pkgname]
+	src_pkgbase   = srcinfo.pkgbase
+	db_package    = repository[pkgname]
+
+	# Get version and pkgrel.
+	src_version   = src_pkgbase.version()
+	db_version    = db_package.version()
+	src_pkgrel    = int(src_version.pkgrel_original)
+	db_pkgrel     = int(db_version.pkgrel_original)
+	wanted_pkgrel = db_pkgrel + 1
+
+	if src_version.withoutPkgrel() < db_version.withoutPkgrel():
+		print('  {}: skip: SRCINFO ({}) is lower than repository ({}). This is NOT supported.'.format(pkgname, src_version, db_version))
+		return False;
+	elif src_version.withoutPkgrel() > db_version.withoutPkgrel():
+		wanted_pkgrel = 1
+	if src_pkgrel == wanted_pkgrel:
+		if verbose: print('  {}: skip: {} -> {}, repository: {}'.format(pkgname, src_version, src_version.withPkgrel(wanted_pkgrel), db_version))
+		return False
+
+	# Do the real update.
+	print('  {}: update: {} -> {}, repository: {}'.format(pkgname, src_version, src_version.withPkgrel(wanted_pkgrel), db_version))
+	pkgbuild = os.path.join(srcinfo.directory, 'PKGBUILD')
+	write_pkgrel(pkgbuild, wanted_pkgrel)
+	return True;
+
+def main():
+	parser = argparse.ArgumentParser(description='Bump the pkgrel of packages to one above their current value in a repository.')
+	parser.add_argument('packages',                  nargs='*',                                           help="The packages to bump.")
+	parser.add_argument('--unbuilt',                 dest='unbuilt',         action='store_true',         help='Also bump unbuilt packages (useful with -d).')
+	parser.add_argument('-p', '--pkgbuild-dir',      dest='pkgbuild_dir',                                 help='The base path of the PKGBUILD and .SRCINFO directories.')
+	parser.add_argument('-d', '--reverse-deps',      dest='reverse_deps',    action='store_true',         help='Also bump reverse dependencies of bumped packages.')
+	parser.add_argument('-r', '--repository',        dest='repository',                                   help='The repository containing the built packages.')
+	parser.add_argument('-f', '--file',              dest='file', nargs='+', type=argparse.FileType('r'), help='Read package names to bump from file.')
+	parser.add_argument('-v', '--verbose',           dest='verbose',         action='store_true',         help='Show verbose output.')
+	options = parser.parse_args()
+
+	files  = options.file if options.file else []
+	bump   = set(options.packages)
+	bump  |= set([line[:-1] for file in files for line in file])
+
+	srcinfo_db   = alpm.SrcInfo.load_db_indexed_by_pkgname(options.pkgbuild_dir)
+	repository   = alpm.read_package_db_file(options.repository)
+	reverse_deps = alpm.reachability_table(alpm.reverse_neighbour_table(repository.values()))
+
+	# Add unbuilt packages, if requested.
+	# These will always be skipped (otherwise they weren't unbuilt),
+	# but together with options.reverse_deps it allows easy bumping
+	# of reverse dependencies of unbuilt packages.
+	if (options.unbuilt):
+		for pkgname, pkg in repository.items():
+			if srcinfo_db[pkgname].pkgbase.version() > pkg.version():
+				bump.add(pkgname)
+
+	updated = set()
+
+	# Bump requested packages.
+	if (options.verbose): print("=> Bumping requested packages.")
+	for pkgname in sorted(bump):
+		if bump_package(pkgname, srcinfo_db, repository, options.verbose):
+			updated.add(pkgname)
+
+	# Bump reverse deps, if requested.
+	if options.reverse_deps:
+		if (options.verbose): print("=> Bumping reverse dependencies.")
+		also_bump = set(flatten([reverse_deps[pkgname] for pkgname in updated])) - updated
+		for pkgname in also_bump:
+			bump_package(pkgname, srcinfo_db, repository, options.verbose)
+
+if __name__ == '__main__': main()

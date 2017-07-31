@@ -1,0 +1,132 @@
+#!/usr/bin/env python
+
+# Copyright 2017 Delft Robotics BV
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+# 3. Neither the name of the copyright holder nor the names of its contributors
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+from glob import glob
+import os.path
+
+import alpm
+import logging
+import argparse
+
+logging.getLogger().addFilter(lambda x: False)
+
+def package_path(repository_dir, package, compression = 'xz'):
+	return '{}/{}-{}-{}.pkg.tar.{}'.format(
+		repository_dir,
+		package.name,
+		package.version(),
+		package.get_value('arch'),
+		compression
+	)
+
+def provides_dep(package, other_package):
+	""" Check if a package provides a dependency of another package. """
+	for provide in package.provides():
+		if provide.name in map(lambda x: x.name, other_package.depends()):     return True
+		if provide.name in map(lambda x: x.name, other_package.makedepends()): return True
+	return False
+
+def find_newer_deps(package, repository_dir, universe, ignore, quick):
+	built_package = alpm.read_package_file(package_path(repository_dir, package))
+	for installed in built_package.installed():
+		if installed.name in ignore: continue
+		try:
+			if not provides_dep(universe[installed.name], package): continue
+		except KeyError:
+			# Previously installed dependency doesn't exist anymore, probably safe to ignore.
+			continue
+
+		new_version = universe[installed.name].version()
+		if installed.version() < new_version:
+			yield installed.name, installed.version(), new_version
+			if quick: return
+
+def find_outdated(repository, repository_dir, universe, ignore, quick):
+	for name, package in repository.items():
+		newer_deps = list(find_newer_deps(package, repository_dir, universe, ignore, quick))
+		if newer_deps: yield name, newer_deps
+
+def main():
+	parser = argparse.ArgumentParser(description='List packages with dependencies that have been built after themselves.')
+	parser.add_argument('-c', '--check',      dest='check',       required=True,       default=None,  help='The repository to check. Only packages in this repository will be scanned.')
+	parser.add_argument('-d', '--repository', dest='repository',  action='append',     default=[],    help='Add a database for package information.')
+	parser.add_argument('-s', '--sync',       dest='directory',   action='append',     default=[],    help='Add a directory of databases for package information.')
+	parser.add_argument('-v', '--verbose',    dest='verbose',     action='store_true', default=False, help='Show verbose output.')
+	parser.add_argument('-t', '--thorough',   dest='thorough',    action='store_true', default=False, help='Find all newer dependencies.')
+	parser.add_argument('-r', '--recursive',  dest='recursive',   action='store_true', default=False, help='List all packages depending on the found packages too.')
+	parser.add_argument('-i', '--ignore',     dest='ignore',      action='append',     default=[],    help='Ignore a package for listing newer reverse dependencies.')
+	parser.add_argument('--ignore-file',      dest='ignore_file', action='append',     default=[],    help='Ignore packages from a file.')
+	options = parser.parse_args()
+
+	repositories = options.repository
+	ignore       = set(options.ignore)
+
+	# Add ignores from files.
+	for file in options.ignore_file:
+		with open(file, 'r') as file:
+			ignore.update([line.strip() for line in file if len(line.strip())])
+
+	# Set logging level.
+	#if options.verbose:
+		#logging.getLogger().setLevel(logging.INFO)
+
+	# Add database in specified directories to database list.
+	for directory in options.directory:
+		repositories += glob(directory + '/*.db')
+
+	# Read target repository and universe repositories.
+	check_repository     = alpm.read_package_db_file(options.check)
+	check_repository_dir = os.path.dirname(options.check)
+	universe = {};
+	for repository in repositories:
+		universe.update(alpm.read_package_db_file(repository))
+	universe.update(check_repository)
+
+	# Find outdated packages.
+	if options.verbose:
+		print("Packages to check: {}".format(len(check_repository)))
+	outdated = dict(find_outdated(check_repository, check_repository_dir, universe, ignore, not options.thorough))
+
+	# Build reverse dependency list if needed.
+	if options.recursive:
+		dependencies = alpm.reverse_neighbour_table(check_repository.values())
+		dependencies = alpm.reachability_table(dependencies)
+		for pkg in outdated.copy():
+			if pkg in ignore: continue
+			for dep in dependencies[pkg]:
+				if not dep in outdated: outdated[dep] = []
+				outdated[dep].append((pkg, universe[pkg].version(), "rebuild"))
+
+	# Print the packages.
+	for pkg, deps in outdated.items():
+		if options.verbose:
+			print('{} ({})'.format(pkg, ', '.join(map(lambda x: '{} {} -> {}'.format(*x), deps))))
+		else:
+			print(pkg)
+
+if __name__ == '__main__': main()

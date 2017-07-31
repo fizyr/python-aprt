@@ -1,0 +1,705 @@
+#!/usr/bin/env python
+
+# Copyright 2017 Delft Robotics BV
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+# 3. Neither the name of the copyright holder nor the names of its contributors
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+import catkin_pkg.package
+import argparse
+import sys
+import os
+import os.path
+import urllib3
+import yaml
+import re
+from collections import OrderedDict
+from termcolor import colored, cprint
+import pickle
+import subprocess
+import hashlib
+import shutil
+
+http = urllib3.PoolManager()
+
+class PackageNotFoundError(Exception):
+	def __init__(self, package, *args, **kwargs):
+		self.package = package
+		super(PackageNotFoundError, self).__init__(*args, **kwargs)
+
+def _download_files(urls):
+	for url in urls:
+		yield http.request('GET', url).data
+
+def _merge_rosdep_data(streams):
+	dependency_map = {}
+	for stream in streams:
+		rosdep_file = yaml.load(stream)
+		for package_name, distrib in rosdep_file.items():
+			if 'arch' in distrib:
+				if 'pacman' in distrib["arch"]:
+					dependency_map[package_name] = distrib["arch"]["pacman"]["packages"]
+				else:
+					dependency_map[package_name] = distrib["arch"]
+	return dependency_map
+
+def _generate_rosdep_map(urls, files = []):
+	return _merge_rosdep_data(list(_download_files(urls)) + list(map(lambda x: open(x, 'r'), files)))
+
+try:
+	import certifi
+
+	# Make verified HTTPS requests
+	http = urllib3.PoolManager(
+		cert_reqs='CERT_REQUIRED', # Force certificate check.
+		ca_certs=certifi.where(),  # Path to the Certifi bundle.
+	)
+except ImportError as e:
+	# HTTPS requests will not be verified
+	pass
+
+
+def extractDescription(description):
+	result = description
+	# Remove HTML tags from description
+	result = re.sub('<[^<]+?>', '', description)
+	# Put it on one line to motivate packagers to make shorter descriptions
+	result = re.sub('\n', ' ', result)
+	# Convert tabs to spaces
+	result = re.sub('\t', ' ', result)
+	# Multiple consecutive spaces turned into one
+	result = re.sub('([ ]+)', ' ', result)
+	# Only take the first sentence (keep short description)
+	result = re.split("\. |\.$", result)[0] + "."
+	# Handle quotes
+	result = result.replace('"', '').replace('`', '').replace('&quot;', '').replace('\'','')
+	return result
+
+class PackageBase(object):
+
+	def __init__(self, distro, repository_url, name, version, version_patch):
+		self.packages = []
+		self.distro = distro
+		self.repository_url = repository_url
+		self.repository_name = self.repository_url.split('/')[-1].split('.')[0]
+		package = self._parse_package_file(self._get_package_xml_url(repository_url, name, version))
+		self.name = package.name
+		self.version = package.version
+		self.version_patch = version_patch
+		self.package_release = str(int(version_patch) + 1)
+		self.licenses = package.licenses
+		self.depends      = set([dependency.name for dependency in package.run_depends + package.build_depends])
+		self.makedepends  = set([dependency.name for dependency in package.buildtool_depends])
+		self.checkdepends = set([dependency.name for dependency in package.test_depends])
+
+		# Tarball
+		self.tarball_url = "{}/archive/release/{}/{}/{}-{}.tar.gz".format(self.repository_url.replace('.git',''), self.distro.name, self.name, self.version, self.version_patch)
+		self.tarball_dir = "{}-release-{}-{}-{}-{}".format(self.repository_name, self.distro.name, self.name, self.version, self.version_patch)
+
+		# This may be the case for some metapackages
+		self.is_virtual = False
+
+		self.description = extractDescription(package.description)
+
+		# Website URL
+		self.site_url = package.urls[-1] if package.urls else "http://www.ros.org/"
+
+	def formatDeps(self, deps):
+		if not deps: return ''
+		return "\n\t'" + "'\n\t'".join(sorted(list(deps))) + "'\n"
+
+	def _parse_package_file(self, url):
+		"""
+		Parses the package.xml file specified by `url`.
+
+		Arguments:
+		- `url`: Valid URL pointing to a package.xml file.
+		"""
+		return catkin_pkg.package.parse_package_string(http.request('GET', url).data)
+
+	def _fix_dependencies(self, dependencies, rosdep_map, known_packages):
+		fixed_dependencies = set()
+		for dep in dependencies:
+			if dep in rosdep_map:
+				fixed_dependencies.update(map(lambda x: self._ensure_python3_dependency(x), rosdep_map[dep]))
+			elif dep in known_packages:
+				fixed_dependencies.add('ros-{}-{}'.format(self.distro.name, dep.replace('_', '-')))
+			else:
+				fixed_dependencies.add(self._ensure_python3_dependency(dep))
+		return fixed_dependencies
+
+	def _get_deps(self, rosdep_map, known_packages):
+		return self._fix_dependencies(self.depends, rosdep_map, known_packages)
+
+	def _get_makedeps(self, rosdep_map, known_packages):
+		return self._fix_dependencies(self.makedepends, rosdep_map, known_packages)
+
+	def _rosify_package_name(self, name):
+		return name.replace('_', '-')
+
+	def _get_full_package_name(self, name):
+		return "ros-{}-{}".format(self.distro.name, name.replace('_', '-'))
+
+	def _ensure_python2_dependency(self, dependency):
+		# python     ---> python2
+		# python-foo ---> python2-foo
+		return re.sub(r'^python(?!2)([a-zA-Z0-9\-]*)', r'python2\1', dependency)
+
+	def _ensure_python3_dependency(self, dependency):
+		# python2     ---> python
+		# python2-foo ---> python-foo
+		if dependency.startswith('python2'):
+			return 'python' + dependency[7:]
+		return dependency
+
+	def _get_package_xml_url(self, url, name, version):
+		if url.find('github'):
+			if self.distro.name != "fuerte":
+				return github_raw_url(url, 'package.xml', 'release/{}/{}'.format(self.distro.name, name))
+			else: # fuerte-specific
+				return github_raw_url(url, 'package.xml', 'release/{}/{}'.format(name, version))
+		else:
+			raise Exception('Unable to generate url for package.xml')
+
+	def _download_tarball(self, url, path, name):
+		"""
+		Download the tarball of the package, and prepend the package name to avoid
+		clashes.
+		"""
+		tarball_path = "{}/{}-{}".format(path, name, url.split('/')[-1])
+		if not os.path.exists(tarball_path):
+			with http.request('GET', url, preload_content=False) \
+					as r, open(tarball_path, 'wb') as out_file:
+				shutil.copyfileobj(r, out_file)
+		return hashlib.sha256(open(tarball_path, 'rb').read()).hexdigest()
+
+	def generate(self, exclude_dependencies=set(), rosdep_map=[], known_packages=[], output_dir=None):
+		raise Exception('`generate` not implemented.')
+
+	def is_same_version(self, pkgbuild_file):
+		"""
+		Checks whether a currently installed PKGBUILD contains the same version.
+		"""
+		if os.path.isfile(pkgbuild_file):
+			f = open(pkgbuild_file, "r")
+			content = f.read()
+			pattern_pkgver = re.compile(r"pkgver='([0-9]+(?:[.][0-9]+)*)'")
+			pattern_pkgver_patch = re.compile(r"_pkgver_patch=([0-9]*)")
+			match_pkgver = re.search(pattern_pkgver, content)
+			match_pkgver_patch = re.search(pattern_pkgver_patch, content)
+			if match_pkgver and match_pkgver_patch:
+				return (match_pkgver.group(1) == self.version
+					and match_pkgver_patch.group(1) == self.version_patch)
+			else:
+				return False
+		else:
+			return False
+
+
+class Package(PackageBase):
+	BUILD_TEMPLATE = """# Script generated with import_catkin_packages.py
+# For more information: https://github.com/bchretien/arch-ros-stacks
+pkgdesc="ROS - %(description)s"
+url='%(site_url)s'
+
+pkgname='ros-%(distro)s-%(arch_package_name)s'
+pkgver='%(package_version)s'
+_pkgver_patch=%(package_version_patch)s
+arch=('any')
+pkgrel=%(package_release)s
+license=('%(license)s')
+
+makedepends=(%(makedepends)s)
+depends=(%(depends)s)
+
+# Git version (e.g. for debugging)
+# _tag=release/%(distro)s/%(package_name)s/${pkgver}-${_pkgver_patch}
+# _dir=${pkgname}
+# source=("${_dir}"::"git+%(package_url)s"#tag=${_tag})
+# sha256sums=('SKIP')
+
+# Tarball version (faster download)
+_dir="%(tarball_dir)s"
+source=("${pkgname}-${pkgver}-${_pkgver_patch}.tar.gz"::"%(tarball_url)s")
+sha256sums=('%(tarball_sha)s')
+
+build() {
+	# Use ROS environment variables
+	source /usr/share/ros-build-tools/clear-ros-env.sh
+	[ -f /opt/ros/%(distro)s/setup.bash ] && source /opt/ros/%(distro)s/setup.bash
+
+	# Create build directory
+	[ -d ${srcdir}/build ] || mkdir ${srcdir}/build
+	cd ${srcdir}/build
+
+	# Fix Python2/Python3 conflicts
+	/usr/share/ros-build-tools/fix-python-scripts.sh -v %(python_version_major)s ${srcdir}/${_dir}
+
+	# Build project
+	cmake ${srcdir}/${_dir} \\
+				-DCMAKE_BUILD_TYPE=Release \\
+				-DCATKIN_BUILD_BINARY_PACKAGE=ON \\
+				-DCMAKE_INSTALL_PREFIX=/opt/ros/%(distro)s \\
+				-DPYTHON_EXECUTABLE=%(python_executable)s \\
+				-DPYTHON_INCLUDE_DIR=%(python_include_dir)s \\
+				-DPYTHON_LIBRARY=%(python_library)s \\
+				-DPYTHON_BASENAME=%(python_basename)s \\
+				-DSETUPTOOLS_DEB_LAYOUT=OFF
+	make
+}
+
+package() {
+	cd "${srcdir}/build"
+	make DESTDIR="${pkgdir}/" install
+}
+"""
+
+	def generate(self, python_version, exclude_dependencies=set(), rosdep_map=[], known_packages=[], output_dir=None):
+		makedepends = self._get_makedeps(rosdep_map, known_packages) - exclude_dependencies
+		depends     = self._get_deps(rosdep_map, known_packages)     - exclude_dependencies
+		checkdepends = self._fix_dependencies(self.checkdepends, rosdep_map, known_packages) - exclude_dependencies
+		makedepends.update(['cmake', 'ros-build-tools'])
+		makedepends.update(checkdepends)
+
+		python_version_major = python_version.split('.')[0]
+		python_version_full = python_version
+		# Python 3 include directory is /usr/include/python3.4m... Because why not?
+		if python_version_major == "3":
+			python_version_full = "{}{}".format(python_version_full, "m")
+
+		# PYTHON_BASENAME for PySide:
+		# If Python 2.7: PySideConfig{-python2.7}.cmake
+		python_basename = "-python2.7"
+		if python_version_major == "3":
+			# If Python 3.4: PySideConfig{.cpython-34m}.cmake
+			python_basename = ".cpython-{}".format(python_version_full.replace(".", ""))
+
+
+		pkgbuild = self.BUILD_TEMPLATE % {
+			'distro': self.distro.name,
+			'arch_package_name': self._rosify_package_name(self.name),
+			'package_name': self.name,
+			'package_version': self.version,
+			'package_version_patch': self.version_patch,
+			'package_release': self.package_release,
+			'package_url': self.repository_url,
+			'license': ', '.join(self.licenses),
+			'description': self.description,
+			'site_url': self.site_url,
+			'tarball_url': "{}/archive/release/{}/{}/${{pkgver}}-${{_pkgver_patch}}.tar.gz".format(self.repository_url.replace('.git',''), self.distro.name, self.name),
+			'tarball_dir': "{}-release-{}-{}-${{pkgver}}-${{_pkgver_patch}}".format(self.repository_name, self.distro.name, self.name),
+			'tarball_sha': self._download_tarball(self.tarball_url, output_dir, "ros-{}-{}".format(self.distro.name, self._rosify_package_name(self.name))),
+			'makedepends': self.formatDeps(makedepends),
+			'depends': self.formatDeps(depends),
+			'python_version_major': python_version_major,
+			'python_executable': '/usr/bin/python{}'.format(python_version_major),
+			'python_include_dir': '/usr/include/python{}'.format(python_version_full),
+			'python_library': '/usr/lib/libpython{}.so'.format(python_version_full),
+			'python_basename': python_basename,
+		}
+
+		# Post-processing:
+		# Remove useless carriage return
+		pkgbuild = re.sub('\\n  \)', ')', pkgbuild)
+		return pkgbuild
+
+
+class MetaPackage(PackageBase):
+	BUILD_TEMPLATE = """# Script generated with import_catkin_packages.py
+# For more information: https://github.com/bchretien/arch-ros-stacks
+pkgdesc="ROS - %(description)s"
+url='%(site_url)s'
+
+pkgname='ros-%(distro)s-%(arch_package_name)s'
+pkgver='%(package_version)s'
+arch=('any')
+pkgrel=%(package_release)s
+license=('%(license)s')
+
+makedepends=(%(makedepends)s)
+depends=(%(depends)s)
+
+source=()
+md5sums=()
+"""
+
+	def __init__(self, distro, repository_url, name, version, version_patch):
+		try:
+			super(MetaPackage, self).__init__(distro, repository_url, name, version, version_patch)
+		except urllib3.HTTPError:
+			# Virtual metapackage
+			# TODO: there should be a cleaner way to deal with this...
+			self.name = name
+			self.is_virtual = True
+		self.packages = [Package(distro, repository_url, child_name, version, version_patch) for child_name in distro.meta_package_package_names(name)]
+
+	def generate(self, exclude_dependencies=set(), rosdep_map=[], known_packages=[]):
+		makedepends = self._get_makedeps(rosdep_map, known_packages) - exclude_dependencies
+		depends     = self._get_deps(rosdep_map, known_packages)     - exclude_dependencies
+		makedepends.update(['cmake', 'ros-build-tools'])
+
+		pkgbuild = self.BUILD_TEMPLATE % {
+			'distro': self.distro.name,
+			'arch_package_name': self._rosify_package_name(self.name),
+			'package_name': self.name,
+			'package_version': self.version,
+			'package_version_patch': self.version_patch,
+			'package_release': self.package_release,
+			'license': ', '.join(self.licenses),
+			'description': self.description,
+			'site_url': self.site_url,
+			'makedepends': self.formatDeps(makedepends),
+			'depends': self.formatDeps(depends),
+		}
+
+		# Post-processing:
+		# Remove useless carriage return
+		pkgbuild = re.sub('\${ros_depends\[@\]}\\n  \)', '${ros_depends[@]})', pkgbuild)
+		return pkgbuild
+
+
+class DistroDescription(object):
+
+	def __init__(self, name, url, python_version):
+		stream = http.request('GET', url).data
+		self.name = name
+		self._distro = yaml.load(stream)
+		self._package_cache = {}
+		self.python_version = python_version
+		if self.name == "fuerte":
+			if self.name != self._distro['release-name']:
+				raise Exception('ROS distro names do not match ({} != {})'.format(self.name, self._distro['release-name']))
+		# process "metapackages"
+		if 'metapackages' in self._distro['repositories'].keys():
+			metapackages = self._distro['repositories']['metapackages']['release']
+			for meta in metapackages['packages']:
+				self._distro['repositories'][meta] = {}
+				self._distro['repositories'][meta]['release'] = {}
+				self._distro['repositories'][meta]['release']['url'] = metapackages['url']
+				self._distro['repositories'][meta]['release']['version'] = metapackages['version']
+			del self._distro['repositories']['metapackages']
+
+
+	def package_names(self, expand_metapackages=False):
+		packages = [name for name in self._distro['repositories'].keys()]
+		if expand_metapackages:
+			return sum([([name] + self.meta_package_package_names(name)) if self._is_meta_package(name) else [name] for name in packages], [])
+		else:
+			return packages
+
+	def is_package(self, name):
+		return self._get_package_data(name) != None
+
+	def package(self, name):
+		package_data = self._get_package_data(name)
+		if not package_data:
+			raise PackageNotFoundError(name, 'Unable to find package `{}`'.format(name))
+		if self._package_cache.get(name):
+			return self._package_cache[name]
+		url = package_data['url']
+		version = package_data['version'].split('-')[0]
+		version_patch = package_data['version'].split('-')[1]
+		# WARNING: some metapackages embed a package with the same name. In this case,
+		#          we treat the package as a normal package.
+		if self._is_meta_package(name) and (not name in self._distro['repositories'][name]['release']['packages']):
+			package = MetaPackage(self, url, name, version, version_patch)
+		else:
+			package = Package(self, url, name, version, version_patch)
+		self._package_cache[name] = package
+		return package
+
+	def meta_package_package_names(self, name):
+		return self._distro['repositories'][name]['release']['packages']
+
+	def python_major(self):
+		"""
+		Return the major version number of Python.
+		"""
+		return self.python_version.split('.')[0]
+
+	def _is_meta_package(self, name):
+		if self._distro['repositories'].get(name) != None:
+			if self._distro['repositories'][name].get('release') != None:
+				return (self._distro['repositories'][name]['release'].get('packages') != None)
+
+	def _get_package_data(self, name):
+		"""
+		Searches for `name` in all known packages and metapackages.
+		"""
+		if self._distro['repositories'].get(name):
+			try:
+				return self._distro['repositories'][name]['release']
+			except KeyError as e:
+				print (colored("Missing {} branch for {}".format(e, name), 'red', attrs=['bold']))
+		else:
+			for package in self.package_names():
+				if (self._is_meta_package(package) and name in self._distro['repositories'][package]['release']['packages']):
+					return self._distro['repositories'][package]['release']
+
+
+def list_packages(distro_desc, distro_dir=None):
+	"""
+	List available packages.
+	"""
+	if not distro_dir or not os.path.isdir(distro_dir):
+		print(*sorted(distro_desc.package_names()), sep='\n')
+	else:
+		# For each package, check if a PKGBUILD has already been generated
+		for name in sorted(distro_desc.package_names()):
+			if os.path.isfile(os.path.join(distro_dir, name, "PKGBUILD")):
+				print("[✓] {}".format(colored(name, 'green', attrs=['bold'])))
+			else:
+				print("[ ] {}".format(name))
+
+
+### From http://code.activestate.com/recipes/577058/ (r2)
+def query_yes_no(question, default="yes"):
+	"""
+	Ask a yes/no question via input() and return their answer.
+
+	"question" is a string that is presented to the user.
+	"default" is the presumed answer if the user just hits <Enter>.
+			It must be "yes" (the default), "no" or None (meaning
+			an answer is required of the user).
+
+	The "answer" return value is one of "yes" or "no".
+	"""
+	valid = {"yes":"yes",   "y":"yes",  "ye":"yes",
+			 "no":"no",     "n":"no"}
+	if default == None:
+		prompt = " [y/n] "
+	elif default == "yes":
+		prompt = " [Y/n] "
+	elif default == "no":
+		prompt = " [y/N] "
+	else:
+		raise ValueError("invalid default answer: '{}'".format(default))
+	while True:
+			print(question + prompt)
+			choice = input().lower()
+			if default is not None and choice == '':
+				return default
+			elif choice in valid.keys():
+				return valid[choice]
+			else:
+				print("Please respond with 'yes' or 'no' (or 'y' or 'n').")
+
+
+def github_raw_url(repo_url, path, commitish):
+	"""
+	Returns the URL of the file blob corresponding to `path` in the
+	github repository `repo_url` in branch, commit or tag `commitish`.
+	"""
+	url = urllib3.util.parse_url(repo_url)
+	return 'https://raw.{}{}/{}/{}'.format(url.host, url.path.replace('.git', ''), commitish, path)
+
+
+
+def create_package_directory(directory, package, distro):
+	"""
+	Create a directory.
+	"""
+	full_dir = os.path.join(directory, 'ros-{}-{}'.format(distro, package.name.replace('_', '-')))
+	if not os.path.exists(full_dir):
+		os.makedirs(full_dir)
+	return full_dir
+
+
+def generate_pkgbuild(
+	distro,
+	package,
+	directory,
+	force=False,
+	no_overwrite=False,
+	update=False,
+	exclude_dependencies=set(),
+	rosdep_map=[],
+	known_packages=[]
+):
+	"""
+	Generate a PKGBUILD file for the given package and the given ROS
+	distribution.
+	"""
+
+	children = set()
+	dependencies = set()
+
+	if distro._is_meta_package(package.name):
+		children = set(distro.meta_package_package_names(package.name))
+
+	# If this is a virtual package (i.e. not an actual package)
+	if package.is_virtual:
+		return children, dependencies
+
+	dependencies |= package.makedepends | package.depends
+
+	# If the directory does not exist, create it
+	output_directory = create_package_directory(directory, package, distro.name)
+
+	pkgbuild_file = os.path.join(output_directory, 'PKGBUILD')
+
+	exists = os.path.exists(pkgbuild_file)
+	same_version = exists and package.is_same_version(pkgbuild_file)
+
+	# If PKGBUILD already exists
+	if no_overwrite and exists:
+		print('{} ({}): exists, skipping package.'.format(colored(package.name, 'yellow', attrs=['bold']), colored(package.version + '-' + package.version_patch, attrs=['bold'])))
+		return children, dependencies
+
+	if update and same_version:
+		print('{} ({}): up-to-date, skipping package.'.format(colored(package.name, 'yellow', attrs=['bold']), colored(package.version + '-' + package.version_patch, attrs=['bold'])))
+		return children, dependencies
+
+	if exists and not force:
+		if  query_yes_no("Directory '{}' already contains a PKGBUILD file. Overwrite?".format(output_directory)) == "no":
+			return children, dependencies
+
+	if exists:
+		print('{} ({}): exists, overwriting.'.format(colored(package.name, 'green', attrs=['bold']), colored(package.version + '-' + package.version_patch, attrs=['bold'])))
+	else:
+		print('{} ({}): new, generating.'.format(colored(package.name, 'green', attrs=['bold']), colored(package.version + '-' + package.version_patch, attrs=['bold'])))
+
+	# Write PKGBUILD file
+	with open(pkgbuild_file, 'w') as pkgbuild:
+		pkgbuild.write(package.generate(distro.python_version, exclude_dependencies, rosdep_map, known_packages, output_directory))
+	return children, dependencies
+
+
+def main():
+	default_distro_url = 'https://raw.github.com/ros/rosdistro/master/{}/distribution.yaml'
+	default_rosdep_url = 'https://raw.github.com/ros/rosdistro/master/rosdep/{}.yaml'
+
+	parser = argparse.ArgumentParser()
+	parser.add_argument('packages', nargs='+')
+	parser.add_argument('--distro', default='hydro', dest='distro', help='Select the ROS distro to use.')
+	parser.add_argument('--list-packages', dest='list_packages', action='store_true', default=False, help='Lists all available packages.')
+	parser.add_argument('--output-directory', dest='output_directory', default=None, help='The output directory. Packages are put into <output-directory>/<name>')
+	parser.add_argument('--distro-url', dest='distro_url', default=default_distro_url, help='The URL of the distro description. \'{}\' is replaced by the actual distro name')
+	parser.add_argument('--rosdep-urls', dest='rosdep_urls', nargs='*', default=[default_rosdep_url.format('base'), default_rosdep_url.format('python'), default_rosdep_url.format('ruby')], help='The URLs of the rosdep mapping files.')
+	parser.add_argument('--rosdep-files', dest='rosdep_files', nargs='*', default=[], help='Local rosdep definitions.')
+	parser.add_argument('--blacklist',      dest='blacklist',      nargs='*', action="append", default=[], help='Blacklist packages.')
+	parser.add_argument('--blacklist-file', dest='blacklist_file', nargs='*', action="append", default=[], help='Blacklist packages from a file.')
+	parser.add_argument('--exclude-dependencies', dest='exclude_dependencies', nargs='*', default=[], help='List of (source) package dependencies to exclude from the generated PKGBUILD file.')
+	parser.add_argument('--python-version', dest='python_version', default='', help='Python version that will be used. Accepted values are 2.7 or 3.5. Note that Python 3 is only supported in Indigo and Jade.')
+	parser.add_argument('-f', '--force', dest='force', action='store_true', default=False, help='Always overwrite exiting PKGBUILD files.')
+	parser.add_argument('-n', '--no-overwrite', dest='no_overwrite', action='store_true', default=False, help='Do not overwrite PKGBUILD files.')
+	parser.add_argument('-r','--recursive', dest='recursive', action='store_true', default=False, help='Recursively import dependencies')
+	parser.add_argument('-u','--update', dest='update', action='store_true', default=False, help='Update PKGBUILD if a newer version is found.')
+	parser.add_argument('-c','--continue', dest='ignore_errors', action='store_true', default=False, help='Continue if a package is not found.')
+	options = parser.parse_args()
+
+	if options.distro == "fuerte" and options.distro_url == default_distro_url:
+		# Use legagy fuerte URL
+		options.distro_url = 'https://raw.github.com/ros/rosdistro/master/releases/{}.yaml'
+
+	# Dictionary containing valid Python versions
+	valid_python_versions = {
+		"fuerte":  ["2.7"],
+		"groovy":  ["2.7"],
+		"hydro":   ["2.7"],
+		"indigo":  ["2.7", "3.5"],
+		"jade":    ["2.7", "3.5"],
+		"kinetic": ["2.7", "3.6"],
+	}
+
+	# Default Python version that will be used
+	default_python_version = {
+		"fuerte":  "2.7",
+		"groovy":  "2.7",
+		"hydro":   "2.7",
+		"indigo":  "2.7",
+		"jade":    "2.7",
+		"kinetic": "3.6",
+	}
+
+	python_version = default_python_version[options.distro]
+	if options.python_version != "":
+		if options.python_version in valid_python_versions[options.distro]:
+			python_version = options.python_version
+		else:
+			print("Invalid Python version ({}) for {}, using version {} instead.".format(options.python_version, options.distro, python_version))
+
+	print("Dowloading release information.")
+	distro = DistroDescription(options.distro, python_version=python_version, url=options.distro_url.format(options.distro))
+
+	if options.output_directory:
+		output_directory = os.path.expanduser(options.output_directory)
+		if not os.path.exists(output_directory):
+			os.makedirs(output_directory)
+
+		if os.path.isdir(output_directory):
+			distro_dir = os.path.abspath(output_directory)
+		else:
+			print("Invalid --output-directory. Exiting.")
+			sys.exit()
+	else:
+		distro_dir = None
+
+	if options.list_packages:
+		list_packages(distro, distro_dir)
+		return
+
+	if not distro_dir:
+		print("Missing mandatory --output-directory. Exiting.")
+		sys.exit()
+
+	# Prepare blacklist
+	blacklist = set(options.blacklist)
+	for file in options.blacklist_file:
+		with open(file, 'r') as file:
+			blacklist.update([line[:-1] for line in file])
+
+	print("Dowloading rosdep information.")
+	rosdep_map     = _generate_rosdep_map(options.rosdep_urls, options.rosdep_files)
+	known_packages = distro.package_names(expand_metapackages=True)
+
+	print("Generating PKGBUILDs.")
+	todo = set(options.packages) - blacklist
+	done = blacklist
+	while todo:
+		package = todo.pop()
+		try:
+			children, dependencies = generate_pkgbuild(
+				distro,
+				distro.package(package),
+				distro_dir,
+				exclude_dependencies=set(options.exclude_dependencies),
+				force=options.force,
+				no_overwrite=options.no_overwrite,
+				update=options.update,
+				rosdep_map=rosdep_map,
+				known_packages=known_packages
+			)
+			done.add(package)
+			todo.update(children - done)
+			if options.recursive:
+				todo.update(filter(lambda x: x in known_packages and x not in done and x not in rosdep_map, dependencies))
+		except KeyboardInterrupt:
+			break
+		except PackageNotFoundError as e:
+			print('{}: not found in repository.'.format(colored(e.package, 'red', attrs=['bold'])))
+			if not options.ignore_errors: break
+
+if __name__ == '__main__':
+	main()

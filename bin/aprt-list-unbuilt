@@ -1,0 +1,144 @@
+#!/usr/bin/env python
+
+# Copyright 2017 Delft Robotics BV
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+# 3. Neither the name of the copyright holder nor the names of its contributors
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+from glob import glob
+import os
+import logging
+import argparse
+
+import alpm
+
+#logging.getLogger().setLevel(logging.DEBUG)
+
+def is_unbuilt(pkgbuild, repository):
+	if pkgbuild.name not in repository:
+		logging.info("Package `{}' ({}) is does not exist in the repository.".format(pkgbuild.name, pkgbuild.version()))
+		return True
+
+	package = repository[pkgbuild.name]
+	diff    = pkgbuild.version().__cmp__(package.version())
+
+	if diff == 0:
+		logging.debug("PKGBUILD `{}' specifies the same version ({}) as the repository.".format(pkgbuild.name, pkgbuild.version()))
+		return False
+
+	if diff > 0:
+		logging.info("PKGBUILD `{}' specifies newer version ({}) than repository ({}).".format(pkgbuild.name, pkgbuild.version(), package.version()))
+		return True
+
+	if diff < 0:
+		logging.warning("Built package `{}' ({}) is newer than PKGBUILD ({}).".format(pkgbuild.name, package.version(), pkgbuild.version()))
+	return False
+
+def srcinfo_alldepends(srcinfo):
+	for package in srcinfo.packages():
+		yield from package.alldepends()
+
+def srcinfo_provides(srcinfo):
+	for package in srcinfo.packages():
+		yield from package.provides()
+
+def srcinfo_by_provides(srcinfos):
+	result = {}
+	for srcinfo in srcinfos:
+		for provide in srcinfo_provides(srcinfo):
+			if provide.name not in result: result[provide.name] = set()
+			result[provide.name].add(srcinfo.directory)
+	return result
+
+def srcinfo_neighbours(srcinfos):
+	provided_by = srcinfo_by_provides(srcinfos)
+	result = {}
+	for srcinfo in srcinfos:
+		result[srcinfo.directory] = set()
+
+	for srcinfo in srcinfos:
+		for depend in srcinfo_alldepends(srcinfo):
+			if depend.name not in provided_by:
+				continue
+			for provider in provided_by[depend.name]:
+				if provider == srcinfo.directory: continue
+				result[srcinfo.directory].add(provider)
+	return result
+
+def has_dependency_in_set(directory, reachability, haystack):
+	return reachability[directory] & haystack
+
+def sort_buildorder(directories, srcinfos):
+	to_build = set(directories)
+	reachability = alpm.reachability_table(srcinfo_neighbours(srcinfos))
+	result   = []
+	while to_build:
+		progress = False
+		for directory in sorted(to_build):
+			if reachability[directory] & to_build: continue
+			to_build.remove(directory)
+			progress = True
+			yield directory
+			break
+		if not progress: raise RuntimeError('Dependency cycle detected, unable to determine build order. Atleast one cycle exists in the following packages: {}.'.format(', '.join(sorted(to_build))))
+
+
+def main():
+	parser = argparse.ArgumentParser(description='List unbuilt packages and/or their reverse dependencies.')
+	parser.add_argument('-p', '--pkgbuild-dir',      dest='pkgbuild_dir',                                 help='The base path of the PKGBUILD and .SRCINFO directories.')
+	parser.add_argument('-r', '--repository',        dest='repository',                                   help='The repository to search through for unbuilt packages.')
+	parser.add_argument('-d', '--reverse-deps',      dest='reverse_deps',      action='store_true',       help='Ouput the reverse dependencies of the unbuilt packages.')
+	parser.add_argument('-n', '--no-unbuilt',        dest='no_unbuilt',        action='store_true',       help='Do not output the unbuilt packages themselves (useful with -d).')
+	parser.add_argument('-v', '--verbose',           dest='verbose',           action='store_true',       help='Show verbose output.')
+	options = parser.parse_args()
+
+	srcinfo_db   = alpm.SrcInfo.load_db_indexed_by_pkgname(options.pkgbuild_dir)
+	repository   = alpm.read_package_db_file(options.repository)
+	packages     = {}
+
+	unbuilt      = set()
+	unbuilt_pkgs = set()
+
+	for srcinfo in srcinfo_db.values():
+		for package in srcinfo.packages():
+			packages[package.name] = package
+			if is_unbuilt(package, repository):
+				unbuilt_pkgs.add(package.name)
+				unbuilt.add(srcinfo.directory)
+
+	neighbours   = alpm.reverse_neighbour_table(packages.values())
+	reachability = alpm.reachability_table(neighbours)
+
+	unbuilt_reverse_deps = set()
+	for pkgname in unbuilt_pkgs:
+		unbuilt_reverse_deps.update(map(lambda x: srcinfo_db[x].directory, reachability[pkgname]))
+	unbuilt_reverse_deps.difference_update(unbuilt)
+
+	output = set()
+	if not options.no_unbuilt: output |= unbuilt
+	if options.reverse_deps:   output |= unbuilt_reverse_deps
+	for directory in sort_buildorder(output, srcinfo_db.values()):
+		print(directory)
+
+if __name__ == '__main__': main()
