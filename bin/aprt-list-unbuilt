@@ -31,7 +31,7 @@ import os
 import logging
 import argparse
 
-import alpm
+import aprt
 
 def is_unbuilt(pkgbuild, repository):
 	if pkgbuild.name not in repository:
@@ -89,7 +89,7 @@ def has_dependency_in_set(directory, reachability, haystack):
 
 def sort_buildorder(directories, srcinfos):
 	to_build = set(directories)
-	reachability = alpm.reachability_table(srcinfo_neighbours(srcinfos))
+	reachability = aprt.reachability_table(srcinfo_neighbours(srcinfos))
 	result   = []
 	while to_build:
 		progress = False
@@ -111,8 +111,8 @@ def main():
 	parser.add_argument('-v', '--verbose',           dest='verbose',           action='store_true',       help='Show verbose output.')
 	options = parser.parse_args()
 
-	srcinfo_db   = alpm.SrcInfo.load_db_indexed_by_pkgname(options.pkgbuild_dir)
-	repository   = alpm.read_package_db_file(options.repository)
+	srcinfo_db   = aprt.SrcInfo.load_db_indexed_by_pkgname(options.pkgbuild_dir)
+	repository   = aprt.read_package_db_file(options.repository)
 	packages     = {}
 
 	unbuilt      = set()
@@ -125,8 +125,8 @@ def main():
 				unbuilt_pkgs.add(package.name)
 				unbuilt.add(srcinfo.directory)
 
-	neighbours   = alpm.reverse_neighbour_table(packages.values())
-	reachability = alpm.reachability_table(neighbours)
+	neighbours   = aprt.reverse_neighbour_table(packages.values())
+	reachability = aprt.reachability_table(neighbours)
 
 	unbuilt_reverse_deps = set()
 	for pkgname in unbuilt_pkgs:
