@@ -27,7 +27,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 import os
-from alpm import Version
+from aprt import Version
 
 packages = {}
 

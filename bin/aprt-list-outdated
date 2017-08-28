@@ -58,11 +58,11 @@ def main():
 		repositories += glob(directory + '/*.db')
 
 	# Read target repository and universe repositories.
-	check_repository     = alpm.read_package_db_file(options.check)
+	check_repository     = aprt.read_package_db_file(options.check)
 	check_repository_dir = os.path.dirname(options.check)
 	universe = {};
 	for repository in repositories:
-		universe.update(alpm.read_package_db_file(repository))
+		universe.update(aprt.read_package_db_file(repository))
 	universe.update(check_repository)
 
 	# Find outdated packages.
@@ -72,8 +72,8 @@ def main():
 
 	# Build reverse dependency list if needed.
 	if options.recursive:
-		dependencies = alpm.reverse_neighbour_table(check_repository.values())
-		dependencies = alpm.reachability_table(dependencies)
+		dependencies = aprt.reverse_neighbour_table(check_repository.values())
+		dependencies = aprt.reachability_table(dependencies)
 		for pkg in outdated.copy():
 			if pkg in ignore: continue
 			for dep in dependencies[pkg]:
