@@ -9,13 +9,13 @@ but it also means you must make sure to update the matching `.SRCINFO` file afte
 For each command, see `command --help` for more information.
 
 ## bump-pkgrel
-Bump the `pkgrel` of a selection of PKGBUILDs to one above the value in a binary repository (or to 1 if the PKGBUILD `pkgver` is newer than the version in the binary repository).
-
-The `.SRCINFO` is not automatically updated.
+Bump the `pkgrel` of selected `PKGBUILD` and `.SRCINFO` files to one above the value in a binary repository.
+If the `pkgver` of the `PKGBUILD` is higher than the version in the binary repository, the `pkgrel` is set to 1.
 
 ## list-unbuilt
 List all directories containing a PKGBUILD that builds one or more packages that are not currently in the repository.
-If the PKGBUILD builds a newer version, it is also listed.
+If the `PKGBUILD` builds a newer version, it is also listed.
 
 ## list-outdated
-List all packages (and optionally their reverse depencendies) that have dependencies that were build more recently than the package itself.
+List all packages from a specific repository that have dependencies that were build more recently than the package itself.
+Reverse dependencies of the packages can also be listed.

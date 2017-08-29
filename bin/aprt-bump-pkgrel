@@ -36,18 +36,35 @@ def flatten(iterable):
 	for x in iterable:
 		for elem in x: yield elem
 
-pkgrel_regex = re.compile('^pkgrel=[0-9]+$', re.MULTILINE);
+pkgbuild_pkgrel_rexeg = re.compile('^pkgrel=[0-9]+$', re.MULTILINE);
+srcinfo_pkgrel_rexeg  = re.compile('^(\\s*)pkgrel\\s*=\\s*[0-9]+$', re.MULTILINE);
 
-def write_pkgrel(filename, pkgrel):
+def write_pkgbuild_pkgrel(filename, pkgrel):
 	data = ""
 	with open(filename, 'r') as file:
 		data = file.read()
-	match = re.search(pkgrel_regex, data)
+	match = re.search(pkgbuild_pkgrel_rexeg, data)
 	if not match:
 		raise RuntimeError('Unable to find pkgrel in PKGBUILD from {}'.format(filename))
 	data = data[:match.start()] + 'pkgrel={}'.format(pkgrel) + data[match.end():]
 	with open(filename, 'w') as file:
 		file.write(data)
+
+def write_srcinfo_pkgrel(filename, pkgrel):
+	data = ""
+	with open(filename, 'r') as file:
+		data = file.read()
+	match = re.search(srcinfo_pkgrel_rexeg, data)
+	if not match:
+		raise RuntimeError('Unable to find pkgrel in PKGBUILD from {}'.format(filename))
+	indent = match.group(0)
+	data = data[:match.start()] + '{}pkgrel = {}'.format(indent, pkgrel) + data[match.end():]
+	with open(filename, 'w') as file:
+		file.write(data)
+
+def write_pkgrel(directory, pkgrel):
+	write_pkgbuild_pkgrel(os.path.join(directory, 'PKGBUILD'), pkgrel)
+	write_srcinfo_pkgrel(os.path.join(directory, '.SRCINFO'), pkgrel)
 
 def bump_package(pkgname, srcinfo_db, repository, verbose):
 	# Look up the package.
@@ -78,8 +95,7 @@ def bump_package(pkgname, srcinfo_db, repository, verbose):
 
 	# Do the real update.
 	print('  {}: update: {} -> {}, repository: {}'.format(pkgname, src_version, src_version.withPkgrel(wanted_pkgrel), db_version))
-	pkgbuild = os.path.join(srcinfo.directory, 'PKGBUILD')
-	write_pkgrel(pkgbuild, wanted_pkgrel)
+	write_pkgrel(directory, wanted_pkgrel);
 	return True;
 
 def main():
