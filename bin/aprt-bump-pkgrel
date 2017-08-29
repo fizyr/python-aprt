@@ -95,7 +95,7 @@ def bump_package(pkgname, srcinfo_db, repository, verbose):
 
 	# Do the real update.
 	print('  {}: update: {} -> {}, repository: {}'.format(pkgname, src_version, src_version.withPkgrel(wanted_pkgrel), db_version))
-	write_pkgrel(directory, wanted_pkgrel);
+	write_pkgrel(srcinfo.directory, wanted_pkgrel);
 	return True;
 
 def main():
