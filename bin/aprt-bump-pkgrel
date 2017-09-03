@@ -41,25 +41,25 @@ srcinfo_pkgrel_rexeg  = re.compile('^(\\s*)pkgrel\\s*=\\s*[0-9]+$', re.MULTILINE
 
 def write_pkgbuild_pkgrel(filename, pkgrel):
 	data = ""
-	with open(filename, 'r') as file:
+	with open(filename, 'r', encoding='utf8') as file:
 		data = file.read()
 	match = re.search(pkgbuild_pkgrel_rexeg, data)
 	if not match:
 		raise RuntimeError('Unable to find pkgrel in PKGBUILD from {}'.format(filename))
 	data = data[:match.start()] + 'pkgrel={}'.format(pkgrel) + data[match.end():]
-	with open(filename, 'w') as file:
+	with open(filename, 'w', encoding='utf8') as file:
 		file.write(data)
 
 def write_srcinfo_pkgrel(filename, pkgrel):
 	data = ""
-	with open(filename, 'r') as file:
+	with open(filename, 'r', encoding='utf8') as file:
 		data = file.read()
 	match = re.search(srcinfo_pkgrel_rexeg, data)
 	if not match:
 		raise RuntimeError('Unable to find pkgrel in PKGBUILD from {}'.format(filename))
 	indent = match.group(0)
 	data = data[:match.start()] + '{}pkgrel = {}'.format(indent, pkgrel) + data[match.end():]
-	with open(filename, 'w') as file:
+	with open(filename, 'w', encoding='utf8') as file:
 		file.write(data)
 
 def write_pkgrel(directory, pkgrel):
