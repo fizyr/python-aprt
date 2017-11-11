@@ -27,23 +27,61 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 import os
-from aprt import Version
+import os.path
+import argparse
+from glob import glob
 
-packages = {}
+from aprt.alpm import read_package_db_file
+from aprt.version import Version
 
-files = list(filter(lambda x: x.endswith('.pkg.tar.xz'), os.listdir(os.sys.argv[1])))
+def valid_date(s):
+	try:
+		return datetime.strptime(s, "%Y-%m-%d")
+	except ValueError:
+		msg = "Not a valid date: '{0}'.".format(s)
+		raise argparse.ArgumentTypeError(msg)
 
-for file in files:
-	pkgname, pkgver, pkgrel, arch = file[:-11].rsplit('-', 3)
-	version = Version.parse('{}-{}'.format(pkgver, pkgrel))
+def is_package_file(name):
+	return (False
+		or name.endswith('.pkg.tar.xz')
+		or name.endswith('.pkg.tar.gz')
+		or name.endswith('.pkg.tar.bz2')
+		or name.endswith('.pkg.tar')
+	)
 
-	if (pkgname, arch) not in packages: packages[(pkgname, arch)] = []
-	packages[(pkgname, arch)].append((version, file))
+def main():
+	parser = argparse.ArgumentParser(description='List or delete all binary packages that are no longer in a repository database.')
+	parser.add_argument('-r', '--repository',       dest='repository',    required=True,           help='The repository database.')
+	parser.add_argument('-v', '--verbose',          dest='verbose',       action='store_true',     help='Print more information.')
+	parser.add_argument('--delete',                 dest='delete',        action='store_true',     help='Delete the package archives that are not in the repository database.')
+	options = parser.parse_args()
 
+	packages = filter(is_package_file, os.listdir(os.path.dirname(options.repository)))
+	database = read_package_db_file(options.repository)
 
-for key, data in packages.items():
-	pkgname, arch = key
-	data.sort()
-	data.pop()
-	for version, file in data:
-		print(file)
+	for package in packages:
+		filename = os.path.basename(package)
+		pkgname, pkgver, pkgrel, arch = filename.rsplit('-', 3)
+		arch = arch.split('.')[0]
+
+		version = Version.parse('{}-{}'.format(pkgver, pkgrel))
+		repo_package = None
+		if pkgname in database:
+			repo_package = database[pkgname]
+		exact_match = repo_package is not None and repo_package.version() == version
+
+		if options.verbose:
+			if repo_package is None:
+				print('{}-{}: package name not found in repository'.format(pkgname, version))
+			elif not exact_match:
+				print('{}-{}: found in repository, but wrong version: {}'.format(pkgname, version, repo_package.version()))
+			else:
+				print('{}-{}: found in repository with same version'.format(pkgname, version))
+		elif not exact_match:
+			print(package)
+
+		if not exact_match and options.delete:
+			os.unlink(package)
+
+if __name__ == '__main__':
+	main()
