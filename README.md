@@ -13,7 +13,7 @@ Bump the `pkgrel` of selected `PKGBUILD` and `.SRCINFO` files to one above the v
 If the `pkgver` of the `PKGBUILD` is higher than the version in the binary repository, the `pkgrel` is set to 1.
 
 ## clean-repo
-Remove package archives that are not present in a repository database.
+List or remove package archives that are not present in a repository database.
 
 ## list-unbuilt
 List all directories containing a PKGBUILD that builds one or more packages that are not currently in the repository.
