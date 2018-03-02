@@ -144,9 +144,13 @@ class Package:
 	def makedepends(self):
 		return map(Dependency.parse, self.get_values('makedepends'))
 
+	def checkdepends(self):
+		return map(Dependency.parse, self.get_values('checkdepends'))
+
 	def alldepends(self):
 		yield from self.depends()
 		yield from self.makedepends()
+		yield from self.checkdepends()
 		#yield from self.optdepends()
 
 	def installed(self):
