@@ -154,7 +154,7 @@ class Package:
 		#yield from self.optdepends()
 
 	def installed(self):
-		return map(package_from_name, self.get_values('installed'))
+		return map(package_from_name_guess, self.get_values('installed'))
 
 	def provides(self):
 		result = set(map(Dependency.parse, self.get_values('provides')))
@@ -190,7 +190,16 @@ def split_pkgname(name):
 		epoch, pkgver = None, epoch
 	else:
 		epoch = int(epoch)
-	return (name, pkgver, pkgrel, epoch)
+	return name, pkgver, pkgrel, epoch
+
+def split_pkgname_arch(name):
+	"""
+		Split a package name with architecture in five fields:
+		(name, pkgver, pkgrel, epoch, arch)
+	"""
+	rest, sep, arch = name.rpartition('-')
+	name, pkgver, pkgrel, epoch = split_pkgname(rest)
+	return name, pkgver, pkgrel, epoch, arch
 
 def package_from_name(name):
 	name, pkgver, pkgrel, epoch = split_pkgname(name)
@@ -199,6 +208,24 @@ def package_from_name(name):
 	package.add_value('pkgrel', pkgrel)
 	package.add_value('epoch',  epoch)
 	return package
+
+def package_from_name_arch(name):
+	name, pkgver, pkgrel, epoch, arch = split_pkgname_arch(name)
+	package = Package(name)
+	package.add_value('pkgver', pkgver)
+	package.add_value('pkgrel', pkgrel)
+	package.add_value('epoch',  epoch)
+	package.add_value('arch',   arch)
+	return package
+
+def package_from_name_guess(name):
+	# makepkg before pacman 5.0.1 didn't store architecture in installed = ...
+	# so here we guess if the last field is the architecture or not....
+	# Ewww!
+	_, _, arch = name.rpartition('-')
+	if arch in ('any', 'x86_64', 'i686'):
+		return package_from_name_arch(name)
+	return package_from_name(name)
 
 def neighbour_table(packages):
 	"""
