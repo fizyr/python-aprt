@@ -172,11 +172,44 @@ class Package:
 	def replaces(self):
 		return map(Dependency.parse, self.get_values('replaces'))
 
+	def hasOption(self, option):
+		return option in self.get_values('options')
+
 	def __str__(self):
 		return '{}-{}'.format(self.name, str(self.version()))
 
 	def __repr__(self):
 		return '{{Package: {}, version: {}}}'.format(self.name, str(self.version()))
+
+	def split_debug_package(self) -> 'Package':
+		"""
+		Generate a split debug package based on an existing package.
+
+		This creates a package definition as created by makepkg when
+		the debug and split options are given.
+		"""
+		use_fields = (
+			'pkgbase',
+			'pkgver',
+			'url',
+			'builddate',
+			'packager',
+			'size',
+			'arch',
+			'license',
+			'makedepends',
+			'checkdepends',
+		)
+
+		package = Package(self.name + '-debug')
+		package.add_value('pkgdesc', 'Detached debugging symbols for {}'.format(self.name))
+
+		for key, values in self.data.items():
+			if key not in use_fields:
+				continue
+			package.add_values(key, values)
+
+		return package
 
 def split_pkgname(name):
 	"""

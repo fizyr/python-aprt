@@ -54,6 +54,10 @@ class SrcInfo:
 				package.add_values(key, values)
 			yield package
 
+			# If the debug and strip options are given, also yield a split debug package.
+			if package.hasOption('debug') and package.hasOption('strip'):
+				yield package.split_debug_package()
+
 	@classmethod
 	def parse(cls, blob, directory):
 		"""
