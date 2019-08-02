@@ -89,7 +89,7 @@ def bump_package(pkgname, srcinfo_db, repository, verbose):
 		return False;
 	elif src_version.withoutPkgrel() > db_version.withoutPkgrel():
 		wanted_pkgrel = 1
-	if src_pkgrel == wanted_pkgrel:
+	elif src_pkgrel == wanted_pkgrel:
 		if verbose: print('  {}: skip: {} -> {}, repository: {}'.format(pkgname, src_version, src_version.withPkgrel(wanted_pkgrel), db_version))
 		return False
 
