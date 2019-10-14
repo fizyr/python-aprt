@@ -6,7 +6,7 @@ setup(
 	name='aprt',
 	version='0.1.11',
 	description='Arch Linux Package Repository Tools',
-	url='http://github.com/delftrobotics/python-aprt',
+	url='https://github.com/fizyr/python-aprt',
 	author='Maarten de Vries',
 	author_email='maarten@de-vri.es',
 	license='BSD',
