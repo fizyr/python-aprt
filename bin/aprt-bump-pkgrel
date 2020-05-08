@@ -118,12 +118,12 @@ def main():
 	reverse_deps = aprt.reachability_table(aprt.reverse_neighbour_table(repository.values()))
 
 	# Add unbuilt packages, if requested.
-	# These will always be skipped (otherwise they weren't unbuilt),
-	# but together with options.reverse_deps it allows easy bumping
+	# These may have wrong pkgrels due to automatically recreated PKGBUILDs,
+	# and together with options.reverse_deps it also allows easy bumping
 	# of reverse dependencies of unbuilt packages.
 	if (options.unbuilt):
 		for pkgname, pkg in repository.items():
-			if srcinfo_db[pkgname].pkgbase.version() > pkg.version():
+			if srcinfo_db[pkgname].pkgbase.version() != pkg.version():
 				bump.add(pkgname)
 
 	updated = set()
