@@ -33,20 +33,20 @@ import argparse
 
 import aprt
 
-def is_unbuilt(pkgbuild, repository):
-	if pkgbuild.name not in repository:
-		logging.info("Package `{}' ({}) is does not exist in the repository.".format(pkgbuild.name, pkgbuild.version()))
+def is_unbuilt(pkgbuild, database):
+	if pkgbuild.name not in database:
+		logging.info("Package `{}' ({}) is does not exist in the repositories.".format(pkgbuild.name, pkgbuild.version()))
 		return True
 
-	package = repository[pkgbuild.name]
+	package = database[pkgbuild.name]
 	diff    = pkgbuild.version().__cmp__(package.version())
 
 	if diff == 0:
-		logging.debug("PKGBUILD `{}' specifies the same version ({}) as the repository.".format(pkgbuild.name, pkgbuild.version()))
+		logging.debug("PKGBUILD `{}' specifies the same version ({}) as the repositories.".format(pkgbuild.name, pkgbuild.version()))
 		return False
 
 	if diff > 0:
-		logging.info("PKGBUILD `{}' specifies newer version ({}) than repository ({}).".format(pkgbuild.name, pkgbuild.version(), package.version()))
+		logging.info("PKGBUILD `{}' specifies newer version ({}) than repositories ({}).".format(pkgbuild.name, pkgbuild.version(), package.version()))
 		return True
 
 	if diff < 0:
@@ -99,21 +99,30 @@ def sort_buildorder(directories, srcinfos):
 			progress = True
 			yield directory
 			break
-		if not progress: raise RuntimeError('Dependency cycle detected, unable to determine build order. Atleast one cycle exists in the following packages: {}.'.format(', '.join(sorted(to_build))))
+		if not progress:
+			cycle = ', '.join(sorted(to_build))
+			raise RuntimeError(f'Dependency cycle detected, unable to determine build order. Atleast one cycle exists in the following packages: {cycle}.')
 
 
 def main():
 	parser = argparse.ArgumentParser(description='List unbuilt packages and/or their reverse dependencies.')
-	parser.add_argument('-p', '--pkgbuild-dir',      dest='pkgbuild_dir',      required=True,             help='The base path of the PKGBUILD and .SRCINFO directories.')
-	parser.add_argument('-r', '--repository',        dest='repository',        required=True,             help='The repository to search through for unbuilt packages.')
-	parser.add_argument('-d', '--reverse-deps',      dest='reverse_deps',      action='store_true',       help='Ouput the reverse dependencies of the unbuilt packages.')
-	parser.add_argument('-n', '--no-unbuilt',        dest='no_unbuilt',        action='store_true',       help='Do not output the unbuilt packages themselves (useful with -d).')
-	parser.add_argument('-v', '--verbose',           dest='verbose',           action='store_true',       help='Show verbose output.')
+	parser.add_argument('-p', '--pkgbuild-dir', dest='pkgbuild_dir',                      required=True, help='The base path of the PKGBUILD and .SRCINFO directories.')
+	parser.add_argument('-r', '--repository',   dest='repository',   action='append',     required=True, help='The repository to search through for unbuilt packages.')
+	parser.add_argument('-d', '--reverse-deps', dest='reverse_deps', action='store_true',                help='Ouput the reverse dependencies of the unbuilt packages.')
+	parser.add_argument('-n', '--no-unbuilt',   dest='no_unbuilt',   action='store_true',                help='Do not output the unbuilt packages themselves (useful with -d).')
+	parser.add_argument('-v', '--verbose',      dest='verbose',      action='store_true',                help='Show verbose output.')
 	options = parser.parse_args()
 
 	srcinfo_db   = aprt.SrcInfo.load_db_indexed_by_pkgname(options.pkgbuild_dir)
-	repository   = aprt.read_package_db_file(options.repository)
 	packages     = {}
+	database     = {}
+
+	for repository in options.repository:
+		for name, details in aprt.read_package_db_file(repository).items():
+			if name in database:
+				raise RuntimeError(f'Duplicate package in repositories: {name}')
+			else:
+				database[name] = details
 
 	unbuilt      = set()
 	unbuilt_pkgs = set()
@@ -121,7 +130,7 @@ def main():
 	for srcinfo in srcinfo_db.values():
 		for package in srcinfo.packages():
 			packages[package.name] = package
-			if is_unbuilt(package, repository):
+			if is_unbuilt(package, database):
 				unbuilt_pkgs.add(package.name)
 				unbuilt.add(srcinfo.directory)
 
