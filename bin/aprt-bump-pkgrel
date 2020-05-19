@@ -123,7 +123,7 @@ def main():
 	# of reverse dependencies of unbuilt packages.
 	if (options.unbuilt):
 		for pkgname, pkg in repository.items():
-			if srcinfo_db[pkgname].pkgbase.version() != pkg.version():
+			if srcinfo_db[pkgname].pkgbase.version() != pkg.version() or pkg.version().pkgrel == 0:
 				bump.add(pkgname)
 
 	updated = set()
