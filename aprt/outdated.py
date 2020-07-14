@@ -24,6 +24,8 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+import os.path
+
 from . import alpm
 
 def provides_dep(package, other_package):
@@ -32,14 +34,11 @@ def provides_dep(package, other_package):
 		if package.providesName(dep.name): return True
 	return False
 
-def package_path(repository_dir, package, compression = 'xz'):
-	return '{}/{}-{}-{}.pkg.tar.{}'.format(
-		repository_dir,
-		package.name,
-		package.version(),
-		package.get_value('arch'),
-		compression
-	)
+def package_path(repository_dir, package):
+	filename = package.get_value('filename')
+	if not filename:
+		raise RuntimeError(f"package has no known filename: {package.name}")
+	return os.path.join(repository_dir, package.get_value('filename'))
 
 def find_newer_deps(package, repository_dir, universe, ignore, quick):
 	built_package = alpm.read_package_file(package_path(repository_dir, package))
