@@ -43,10 +43,11 @@ def valid_date(s):
 
 def is_package_file(name):
 	return (False
-		or name.endswith('.pkg.tar.xz')
-		or name.endswith('.pkg.tar.gz')
-		or name.endswith('.pkg.tar.bz2')
 		or name.endswith('.pkg.tar')
+		or name.endswith('.pkg.tar.bz2')
+		or name.endswith('.pkg.tar.gz')
+		or name.endswith('.pkg.tar.xz')
+		or name.endswith('.pkg.tar.zst')
 	)
 
 def main():
