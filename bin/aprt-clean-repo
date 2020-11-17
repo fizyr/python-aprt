@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright 2017 Delft Robotics BV
+# Copyright 2017-2020 Fizyr B.V.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -27,21 +27,15 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 import os
-import os.path
 import argparse
+from pathlib import Path
 from glob import glob
 
 from aprt.alpm import read_package_db_file
 from aprt.version import Version
 
-def valid_date(s):
-	try:
-		return datetime.strptime(s, "%Y-%m-%d")
-	except ValueError:
-		msg = "Not a valid date: '{0}'.".format(s)
-		raise argparse.ArgumentTypeError(msg)
-
-def is_package_file(name):
+def is_package_file(path: Path):
+	name = path.name
 	return (False
 		or name.endswith('.pkg.tar')
 		or name.endswith('.pkg.tar.bz2')
@@ -57,8 +51,9 @@ def main():
 	parser.add_argument('--delete',                 dest='delete',        action='store_true',     help='Delete the package archives that are not in the repository database.')
 	options = parser.parse_args()
 
-	packages = filter(is_package_file, os.listdir(os.path.dirname(options.repository)))
-	database = read_package_db_file(options.repository)
+	repository = Path(options.repository)
+	packages = filter(is_package_file, repository.parent.iterdir())
+	database = read_package_db_file(str(repository))
 
 	for package in packages:
 		filename = os.path.basename(package)
