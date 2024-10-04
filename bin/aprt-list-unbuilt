@@ -33,7 +33,7 @@ import argparse
 
 import aprt
 
-def is_unbuilt(pkgbuild, database):
+def is_unbuilt(pkgbuild, database, allow_downgrade=False):
 	if pkgbuild.name not in database:
 		logging.info("Package `{}' ({}) is does not exist in the repositories.".format(pkgbuild.name, pkgbuild.version()))
 		return True
@@ -51,6 +51,8 @@ def is_unbuilt(pkgbuild, database):
 
 	if diff < 0:
 		logging.warning("Built package `{}' ({}) is newer than PKGBUILD ({}).".format(pkgbuild.name, package.version(), pkgbuild.version()))
+		return allow_downgrade
+
 	return False
 
 def srcinfo_alldepends(srcinfo):
@@ -106,11 +108,12 @@ def sort_buildorder(directories, srcinfos):
 
 def main():
 	parser = argparse.ArgumentParser(description='List unbuilt packages and/or their reverse dependencies.')
-	parser.add_argument('-p', '--pkgbuild-dir', dest='pkgbuild_dir',                      required=True, help='The base path of the PKGBUILD and .SRCINFO directories.')
-	parser.add_argument('-r', '--repository',   dest='repository',   action='append',     required=True, help='The repository to search through for unbuilt packages.')
-	parser.add_argument('-d', '--reverse-deps', dest='reverse_deps', action='store_true',                help='Ouput the reverse dependencies of the unbuilt packages.')
-	parser.add_argument('-n', '--no-unbuilt',   dest='no_unbuilt',   action='store_true',                help='Do not output the unbuilt packages themselves (useful with -d).')
-	parser.add_argument('-v', '--verbose',      dest='verbose',      action='store_true',                help='Show verbose output.')
+	parser.add_argument('-p', '--pkgbuild-dir',    dest='pkgbuild_dir',                         required=True, help='The base path of the PKGBUILD and .SRCINFO directories.')
+	parser.add_argument('-r', '--repository',      dest='repository',      action='append',     required=True, help='The repository to search through for unbuilt packages.')
+	parser.add_argument('-d', '--reverse-deps',    dest='reverse_deps',    action='store_true',                help='Ouput the reverse dependencies of the unbuilt packages.')
+	parser.add_argument('-n', '--no-unbuilt',      dest='no_unbuilt',      action='store_true',                help='Do not output the unbuilt packages themselves (useful with -d).')
+	parser.add_argument('-w', '--allow-downgrade', dest='allow_downgrade', action='store_true',                help='Output downgraded packages.')
+	parser.add_argument('-v', '--verbose',         dest='verbose',         action='store_true',                help='Show verbose output.')
 	options = parser.parse_args()
 
 	srcinfo_db   = aprt.SrcInfo.load_db_indexed_by_pkgname(options.pkgbuild_dir)
@@ -130,7 +133,7 @@ def main():
 	for srcinfo in srcinfo_db.values():
 		for package in srcinfo.packages():
 			packages[package.name] = package
-			if is_unbuilt(package, database):
+			if is_unbuilt(package, database, allow_downgrade=options.allow_downgrade):
 				unbuilt_pkgs.add(package.name)
 				unbuilt.add(srcinfo.directory)
 

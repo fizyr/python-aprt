@@ -4,7 +4,7 @@ from glob import glob
 
 setup(
 	name='aprt',
-	version='0.1.16',
+	version='0.1.18',
 	description='Arch Linux Package Repository Tools',
 	url='https://github.com/fizyr/python-aprt',
 	author='Maarten de Vries',
